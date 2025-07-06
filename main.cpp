@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -57,6 +58,15 @@ std::string formFile(const std::string& fileName, const json& data){
   return body;
 }
 
+void replaceAll(std::string& str, const std::string& toReplace, const std::string& substitution){
+  if (toReplace.empty()) return;
+  size_t pos = 0;
+  while((pos = str.find(toReplace,pos)) != std::string::npos){
+    str.replace(pos,toReplace.length(),substitution);
+    pos += substitution.length();
+  }
+}
+
 int main(){
   std::map<std::string,std::string> env = loadENV(".env");
   const std::string BOT_TOKEN = getenv("BOT_TOKEN");
@@ -67,7 +77,7 @@ int main(){
   ix::WebSocketHttpHeaders headers;
   headers["Authorization"] = "Bot "+BOT_TOKEN;
   headers["Content-Type"] = "application/json";
-  headers["User-Agent"] = "DiscordBot (BabaMitGurtel, 1.0)";
+  headers["User-Agent"] = "DiscordBot (TestBot, 1.0)";
   headers["Origin"] = "";
 
   args->extraHeaders = headers;
@@ -77,6 +87,18 @@ int main(){
         {"description","Test command."},
         {"contexts",{0,1,2}}
         }).dump(),args);
+
+  HttpClient.post(std::string(BASE_URL)+"applications/"+APPLICATION_ID+"/commands",json({
+        {"name","urbansearch"},
+        {"description","Search for a word on urban dictionary"},
+        {"contexts",{0,1,2}},
+        {"options",{
+        {{"name","word"},
+        {"description","The word you want to search for"},
+        {"type",3}},
+        }}
+        }).dump(),args);
+
 
   ix::HttpResponsePtr out;
   out = HttpClient.get(std::string(BASE_URL)+"gateway",args);
@@ -111,20 +133,75 @@ int main(){
       if (msgJSON["t"]=="INTERACTION_CREATE"){
         json interaction = msgJSON["d"];
         std::cout << "INTERACTION_CREATE RECEIVED" << std::endl;
+
         if (interaction["data"]["name"].get<std::string>() == "test"){
+
           std::cout << "TEST COMMAND RECEIVED" << std::endl;
 
           ix::HttpRequestArgsPtr args = HttpClient.createRequest();
           args->extraHeaders["Origin"] = "";
           args->extraHeaders["Content-Type"] = "multipart/form-data; boundary=" + WEBKITFORMBOUNDARY;
 
-          // Read file
           std::string url = std::string(BASE_URL) + "interactions/" + interaction["id"].get<std::string>() + "/" + interaction["token"].get<std::string>() + "/callback";
 
           ix::HttpResponsePtr out;
           std::cout << "ID: " << interaction["id"].get<std::string>() << "    TOKEN: " << interaction["token"].get<std::string>() << std::endl;
           out = HttpClient.post(url,formFile("./assets/ShutYo.mp4", json({})),args);
           std::cout << "RESPONSE: " << out->body << std::endl;
+
+        } else if (interaction["data"]["name"].get<std::string>() == "urbansearch"){
+
+          ix::HttpRequestArgsPtr args = HttpClient.createRequest();
+          args->extraHeaders["Origin"] = "";
+          args->extraHeaders["Content-Type"] = "application/json";
+
+          std::string url = std::string(BASE_URL) + "interactions/" + interaction["id"].get<std::string>() + "/" + interaction["token"].get<std::string>() + "/callback";
+
+          if (interaction["data"]["options"].is_null() || interaction["data"]["options"].empty()){
+            HttpClient.post(url,json({{"type",4},{"data",{{"content","You **_do_** need to specify the word you want to search for. You know that, right?"}}}}).dump(),args);
+            return;
+          } 
+
+          std::string term = interaction["data"]["options"][0]["value"].get<std::string>();
+          replaceAll(term," ","+");
+
+          ix::HttpResponsePtr out = HttpClient.get("https://api.urbandictionary.com/v0/define?term="+term,args);
+          if (out->statusCode != 200) {HttpClient.post(url,json({{"type",4},{"data",{{"content","Sending request to the UrbanDictionary API has failed."}}}}),args); return;}
+
+          json response = json::parse(out->body)["list"];
+
+          json fields = json::array();
+          if (response.empty()){
+            fields.push_back(json({{"name","No results"},{"value","We haven't any results for your search term"}}));
+          } else {
+            for (int i = 0; i<3; i++){
+              if (response.size()-1<i) break;
+              json result = response[i];
+              std::string definition = result["definition"].get<std::string>();
+              replaceAll(definition,"[","");replaceAll(definition, "]", "");
+              fields.push_back(json({
+                    {"name",result["word"]},
+                    {"value","```\n"+(definition.length() > 1016 ? definition.substr(0, 1014)+".." : definition)+"\n```"}
+                    }));
+            }
+          }
+
+          std::cout << HttpClient.post(url,json({
+                {"type",4},
+                {"data",{
+                {"content",""},
+                {"embeds",{
+                {
+                {"title","Urban Dictionary"},
+                {"description","Crowdsourced online dictionary of slang terms"},
+                {"color",1135360},
+                {"fields",fields},
+                {"thumbnail",{{"url","https://www.urbandictionary.com/favicon-32x32.png"}}}
+                }
+                }}
+                }}
+                }).dump(),args)->body << std::endl;
+
         }
 
       } else if (msgJSON["t"]=="READY") {
